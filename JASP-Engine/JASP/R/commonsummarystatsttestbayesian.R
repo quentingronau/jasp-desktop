@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2016 University of Amsterdam
+# Copyright (C) 2017 University of Amsterdam
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -54,8 +54,7 @@
 		pValue <- .pValueFromT(
 								t = options$tStatistic,
 								n1 = options$n1Size,
-								n2 = n2Value,
-								oneSided = hypothesis.variables$oneSided
+								n2 = n2Value
 						)
 	}
 
@@ -63,21 +62,20 @@
 }
 
 
-.pValueFromT <- function(t, n1, n2 = 0, oneSided = FALSE, var.equal = TRUE) {
+.pValueFromT <- function(t, n1, n2 = 0, var.equal = TRUE) {
 	# Function returns the p value from t statistic
 	#
 	# Args:
 	#   t: t value input by user
 	#   n1: sample size of group 1
 	#   n2: sample size of group 2 (Note the hack by setting n2 = 0)
-	#   oneSided: hypothesis type
 	#   var.equal: Note: always true: var.equal, we do not have enough info for different
 	#              variances. In that case we also need s1 and s2
 	#
 	# Output:
 	#   number in [0, 1] which is the p value
 
-	result <- NA
+	result <- list()
 
 	if (n2 > 0) {
 		# If n2 > 0, then two-sample
@@ -86,21 +84,76 @@
 		# If n2 <= 0, then one-sample
 		someDf <- n1 - 1
 	}
-
-	if (oneSided == FALSE) {
-		# mu \neq 0
-		result <- 2 * pt(-abs(t), df = someDf)
-	} else if (oneSided == "left") {
-		# mu < 0
-		result <- pt(t, df = someDf)
-	} else if (oneSided == "right") {
-		# mu > 0
-		result <- pt(t, df = someDf, lower.tail = FALSE)
-	}
-
+	
+	# mu \neq 0
+	result$twoSided <- 2 * stats::pt(-abs(t), df = someDf)
+	# mu < 0
+	result$minSided <- stats::pt(t, df = someDf)
+	# mu > 0
+	result$plusSided <- stats::pt(t, df = someDf, lower.tail = FALSE)
+	
 	return(result)
 }
 
+.pValueFromCor <- function(corrie, n, method="pearson") {
+  # Function returns the p value from correlation, thus,
+  ##  corrie = r    when  method = "pearson"
+  #   corrie = tau  when  method = "kendall"
+  #   corrie = rho  when  method = "spearman"
+  #
+  # Args:
+  #   corrie: correlation input by user
+  #   n: sample size
+  #   oneSided: hypothesis type: left or right
+  #   method: pearson, kenall, or spearman
+  #
+  # Output:
+  #   list of three p-values
+  
+  result <- list()
+  
+  if (method == "pearson"){
+    # Use t-distribution based on bivariate normal assumption using r to t transformation
+    #
+    if (n > 2 ){
+      df <- n - 2
+    } else {
+      # TODO return error, n needs to be larger than 2
+      df <- 1
+    }
+    
+    t <- corrie*sqrt(df/(1-corrie^2))
+    result <- .pValueFromT(t=t, n1=n-1, n2=0, var.equal=TRUE)
+  } else if (method == "kendall"){
+    # TODO: Add support for SuppDists 
+    # if (n > 2 && n < 50) {
+    #   # Exact sampling distribution
+    #   # tau neq 0
+    #   result$twoSided <- 2*SuppDists::pKendall(-abs(corrie), N=n)
+    #   # tau < 0
+    #   result$minSided <- SuppDists::pKendall(corrie, N=n)
+    #   # tau > 0
+    #   result$plusSided <- SuppDists::pKendall(corrie, N=n, lower.tail = FALSE)
+    # 
+    # } else if (n >= 50){
+      # normal approximation 
+      #
+      someSd <- sqrt(2*(2*n+5)/(9*n*(n-1)))
+      
+      # tau neq 0
+      result$twoSided <- 2 * stats::pnorm(-abs(corrie), sd=someSd)
+      # tau < 0
+      result$minSided <- stats::pnorm(corrie, sd=someSd)
+      # tau > 0
+      result$plusSided <- stats::pnorm(corrie, sd=someSd, lower.tail = FALSE)
+    # }
+  } else if (method == "spearman"){
+    # TODO: Johnny
+    # Without code this will print a NULL, if we go through here 
+  }
+  
+  return(result)
+}
 
 .isInputValid.summarystats.ttest <- function(options, independent) {
 	# Checks if the input given is valid
@@ -134,17 +187,17 @@
 	}
 
 	row <- list(BF = ".",
-							tStatistic = tStatValue,
-							n1Size = n1Value,
-							errorEstimate = ".",
-							pValue = "."
-						)
+				tStatistic = tStatValue,
+				n1Size = n1Value,
+				errorEstimate = ".",
+				pValue = "."
+			)
 
 	if (independent) {
 
 		n2Value <- options$n2Size
 
-		if (options$n2Size==0 || is.null(options$n2Size)) {
+		if (options$n2Size == 0 || is.null(options$n2Size)) {
 			ready <- FALSE
 			n2Value <- "."
 		}
@@ -156,10 +209,9 @@
 }
 
 
-.getPriorAndPosteriorPlot.summarystats.ttest <- function(
-																									run, options, state,
-																									diff, bayesFactorObject,
-																									oneSided, paired) {
+.getPriorAndPosteriorPlot.summarystats.ttest <- function(run, options, state,
+														diff, bayesFactorObject,
+														oneSided, paired) {
 	# Returns the prior and posterior plot. If available from previous,
 	#   the function returns that. Else, it calls the plotPosterior function
 	#
@@ -218,7 +270,8 @@
 						t = options$tStatistic, n1 = options$n1Size, n2 = n2Value, paired = paired,
 						BFH1H0 = BFH1H0, dontPlotData = dontPlotData, rscale = options$priorWidth,
 						addInformation = options$plotPriorAndPosteriorAdditionalInfo,
-						BF = exp(bayesFactorObject$bf), oneSided = oneSided
+						BF = ifelse(BFH1H0, exp(bayesFactorObject$bf), 1/exp(bayesFactorObject$bf)),
+						oneSided = oneSided
 				)
 			plot[["data"]] <- .endSaveImage(image)
 		})
@@ -250,10 +303,9 @@
 }
 
 
-.getBayesFactorRobustnessPlot.summarystats.ttest <- function(
-																											run, options, state,
-																											diff, bayesFactorObject,
-																											oneSided) {
+.getBayesFactorRobustnessPlot.summarystats.ttest <- function(run, options, state,
+															diff, bayesFactorObject,
+															oneSided) {
 	# Returns the Bayes factor robustness plot. If available from previous state
 	#   the function returns that. Otherwise, based on 'run' state, it calls
 	#   the plotBayesFactorRobustness function.
@@ -280,7 +332,7 @@
 	}
 
 	# check if BF type requires a new plot
-	if (bftype.current == bftype.previous) {
+	if (!is.null(bftype.previous) && bftype.current == bftype.previous) {
 		BFtypeRequiresNewPlot <- FALSE
 	}
 
@@ -322,9 +374,9 @@
 
 			if (!is.null(bayesFactorObject)) {
 				BF10post <- ifelse(BFH1H0,
-													.clean(exp(bayesFactorObject$bf)),
-													.clean(1/exp(bayesFactorObject$bf))
-										)
+								.clean(exp(bayesFactorObject$bf)),
+								.clean(1/exp(bayesFactorObject$bf))
+							)
 			}
 		} else {
 			dontPlotData <- TRUE
@@ -371,54 +423,6 @@
 	}
 
 	return(returnPlot)
-}
-
-
-.getBayesfactorTitle.summarystats.ttest <- function(bayesFactorType, hypothesis) {
-	# returns the Bayes factor title to be shown on the table
-	#
-	# Args:
-	#   bayesFactorType: the BF type selected by user
-	#   hypothesis: hypothesis type selected by user
-	#
-	# Output:
-	#   A list containing:
-	#     bftitle: title of Bayes factor to be used in the output table
-	#     BFH1H0: true if BF10 or Log(BF10) is selected
-
-	if (bayesFactorType == "BF01") {
-		BFH1H0 <- FALSE
-
-		if (hypothesis == "groupsNotEqual" || hypothesis == "notEqualToTestValue") {
-			bf.title <- "BF\u2080\u2081"
-		} else if (hypothesis == "groupOneGreater" || hypothesis == "greaterThanTestValue") {
-			bf.title <- "BF\u2080\u208A"
-		} else if (hypothesis == "groupTwoGreater" || hypothesis == "lessThanTestValue") {
-			bf.title <-  "BF\u2080\u208B"
-		}
-	} else if (bayesFactorType == "BF10") {
-		BFH1H0 <- TRUE
-
-		if (hypothesis == "groupsNotEqual" || hypothesis == "notEqualToTestValue") {
-			bf.title <- "BF\u2081\u2080"
-		} else if (hypothesis == "groupOneGreater" || hypothesis == "greaterThanTestValue") {
-			bf.title <- "BF\u208A\u2080"
-		} else if (hypothesis == "groupTwoGreater" || hypothesis == "lessThanTestValue") {
-			bf.title <- "BF\u208B\u2080"
-		}
-	} else if (bayesFactorType == "LogBF10") {
-		BFH1H0 <- TRUE
-
-		if (hypothesis == "groupsNotEqual" || hypothesis == "notEqualToTestValue") {
-			bf.title <- "Log(\u2009\u0042\u0046\u2081\u2080\u2009)"
-		} else if (hypothesis == "groupOneGreater" || hypothesis == "greaterThanTestValue") {
-			bf.title <-"Log(\u2009\u0042\u0046\u208A\u2080\u2009)"
-		} else if (hypothesis == "groupTwoGreater" || hypothesis == "lessThanTestValue") {
-			bf.title <- "Log(\u2009\u0042\u0046\u208B\u2080\u2009)"
-		}
-	}
-
-	return(list(bftitle = bf.title, BFH1H0 = BFH1H0))
 }
 
 
@@ -529,7 +533,7 @@
 
 	# BF10 "ultrawide" prior
 	BF10ultra <- BayesFactor::ttest.tstat(t = t, n1 = n1, n2 = n2, nullInterval = nullInterval,
-																				rscale = "ultrawide")
+																		rscale = "ultrawide")
 	BF10ultra <- .clean(exp(BF10ultra$bf))
 	BF10ultraText <- BF10ultra
 
@@ -563,8 +567,8 @@
 
 		if (grepl(pattern = "e",y1h[i])) {
 			newy <- paste(strsplit(y1h[i], split = "+", fixed=TRUE)[[1]][1], "+",
-										as.numeric(strsplit(y1h[i],split = "+", fixed = TRUE)[[1]][2]) + 1,
-										sep = "")
+						as.numeric(strsplit(y1h[i],split = "+", fixed = TRUE)[[1]][2]) + 1,
+						sep = "")
 		} else {
 			newy <- paste(y1h[i], "0", sep= "")
 		}
@@ -622,8 +626,8 @@
 	while (eval(parse(text= y1l[i])) > min(BF10)) {
 		if (grepl(pattern = "e",y1l[i])) {
 			newy <- paste(strsplit(y1l[i], split = "+", fixed=TRUE)[[1]][1], "+",
-										as.numeric(strsplit(y1l[i],split = "+", fixed = TRUE)[[1]][2])+1,
-										sep="")
+						as.numeric(strsplit(y1l[i],split = "+", fixed = TRUE)[[1]][2])+1,
+						sep="")
 		} else {
 			newy <- paste(y1l[i], "0", sep= "")
 		}
@@ -644,8 +648,8 @@
 	while (eval(parse(text= y3l[i])) > min(BF10)) {
 		if (grepl(pattern = "e",y3l[i])) {
 			newy <- paste(strsplit(y3l[i], split = "+", fixed=TRUE)[[1]][1], "+",
-										as.numeric(strsplit(y3l[i],split = "+", fixed = TRUE)[[1]][2])+1,
-										sep = "")
+						as.numeric(strsplit(y3l[i],split = "+", fixed = TRUE)[[1]][2])+1,
+						sep = "")
 		} else {
 			newy <- paste(y3l[i], "0", sep = "")
 		}
@@ -714,8 +718,8 @@
 			for (i in 1:2) {
 				if (grepl(pattern = "e",yLab1s[length(yLab1s)])) {
 					newy <-  paste(strsplit(yLab1s[length(yLab1s)], split = "+",
-												 fixed = TRUE)[[1]][1], "+", as.numeric(strsplit(yLab1s[length(yLab1s)],
-												 split = "+", fixed = TRUE)[[1]][2]) + 1, sep = "")
+								 fixed = TRUE)[[1]][1], "+", as.numeric(strsplit(yLab1s[length(yLab1s)],
+								 split = "+", fixed = TRUE)[[1]][2]) + 1, sep = "")
 				} else {
 					newy <- paste(yLab1s[length(yLab1s)], "0", sep= "")
 				}
@@ -731,8 +735,8 @@
 		if (max(BF10) > eval(parse(text= yLab1s[length(yLab1s)-1]))) {
 			if (grepl(pattern = "e",yLab1s[length(yLab1s)])) {
 				newy <-  paste(strsplit(yLab1s[length(yLab1s)], split = "+",
-												fixed = TRUE)[[1]][1], "+", as.numeric(strsplit(yLab1s[length(yLab1s)],
-												split = "+", fixed=TRUE)[[1]][2])+1, sep = "")
+							fixed = TRUE)[[1]][1], "+", as.numeric(strsplit(yLab1s[length(yLab1s)],
+							split = "+", fixed=TRUE)[[1]][2])+1, sep = "")
 			} else {
 				newy <- paste(yLab1s[length(yLab1s)], "0", sep= "")
 			}
@@ -756,8 +760,8 @@
 			for (i in 1:2) {
 				if (grepl(pattern = "e",yLab1s[1])) {
 					newy <- paste(strsplit(yLab1s[1], split = "+", fixed=TRUE)[[1]][1], "+",
-												as.numeric(strsplit(yLab1s[1],split = "+", fixed = TRUE)[[1]][2])+1,
-												sep = "")
+								as.numeric(strsplit(yLab1s[1],split = "+", fixed = TRUE)[[1]][2])+1,
+								sep = "")
 				} else {
 					newy <- paste(yLab1s[1], "0", sep= "")
 				}
@@ -776,8 +780,8 @@
 		if (min(BF10) < eval(parse(text= yLab1s[2]))) {
 			if (grepl(pattern = "e",yLab1s[1])) {
 				newy <- paste(strsplit(yLab1s[1], split = "+", fixed=TRUE)[[1]][1], "+",
-											as.numeric(strsplit(yLab1s[1],split = "+", fixed = TRUE)[[1]][2])+1,
-											sep = "")
+							as.numeric(strsplit(yLab1s[1],split = "+", fixed = TRUE)[[1]][2])+1,
+							sep = "")
 			} else {
 				newy <- paste(yLab1s[1], "0", sep= "")
 			}
@@ -844,8 +848,8 @@
 
 	while (eval(parse(text=yLab[2])) > min(BF10)) {
 		interval <- as.numeric(strsplit(format(eval(parse(text = yLab[1])), digits = 3, scientific = TRUE), "-",
-									fixed = TRUE)[[1]][2]) - as.numeric(strsplit(format(eval(parse(text=yLab[2])), digits = 3,
-									scientific = TRUE), "-", fixed = TRUE)[[1]][2])
+							fixed = TRUE)[[1]][2]) - as.numeric(strsplit(format(eval(parse(text=yLab[2])), digits = 3,
+							scientific = TRUE), "-", fixed = TRUE)[[1]][2])
 		pot <- as.numeric(strsplit(format(eval(parse(text = yLab[1])), digits = 3, scientific = TRUE),
 									"-", fixed= TRUE)[[1]][2]) + interval
 
@@ -859,8 +863,8 @@
 
 	while (eval(parse(text=yLab[length(yLab)-1])) < max(BF10)) {
 		interval <- as.numeric(strsplit(format(eval(parse(text = yLab[length(yLab)])), digits = 3, scientific = TRUE), "+",
-									fixed = TRUE)[[1]][2]) - as.numeric(strsplit(format(eval(parse(text = yLab[length(yLab)-1])),
-									digits = 3, scientific = TRUE), "+", fixed = TRUE)[[1]][2])
+							fixed = TRUE)[[1]][2]) - as.numeric(strsplit(format(eval(parse(text = yLab[length(yLab)-1])),
+							digits = 3, scientific = TRUE), "+", fixed = TRUE)[[1]][2])
 		pot <- as.numeric(strsplit(format(eval(parse(text = yLab[length(yLab)])), digits = 3, scientific = TRUE),
 									"+", fixed= TRUE)[[1]][2]) + interval
 
@@ -869,7 +873,7 @@
 		}
 
 		newy <- paste(strsplit(format(eval(parse(text = yLab[length(yLab)])), digits = 3,
-									scientific = TRUE), "+", fixed = TRUE)[[1]][1], "+", pot, sep = "")
+					scientific = TRUE), "+", fixed = TRUE)[[1]][1], "+", pot, sep = "")
 		yLab <- c( yLab, newy)
 	}
 
@@ -1226,13 +1230,16 @@
 		}
 
 		# maxBF
-		if (BF10maxText >= 1000000 | BF10maxText >= 1000000) {
-			BF10maxt <- format(BF10maxText, digits= 4, scientific = TRUE)
+		if (BF10maxText >= 1000000) {
+			BF10maxt <- format(BF10maxText, digits = 3, scientific = TRUE)
 		}
 
-		if (BF10maxText < 1000000 & BF10maxText < 1000000) {
-			BF10maxt <- formatC(BF10maxText, 3, format = "f")
+		if (BF10maxText < 1000000) {
+			BF10maxt <- formatC(BF10maxText, digits = 3, format = "f", drop0trailing = TRUE)
 		}
+
+		maxBFrValt <- formatC(maxBFrVal, digits = 4, format = "f", drop0trailing = TRUE )
+		maxBF <- bquote(.(BF10maxt) ~ .('at r') == .(maxBFrValt))
 
 		if (oneSided == FALSE) {
 			maxBF10LegendText <- bquote(max~BF[1][0]*":")
@@ -1252,25 +1259,26 @@
 		pt.bg <-  c("grey", "white", "black", "red")
 		pt.cex <-  c(cexPoints, 1.1, 1.1, 1.1)
 
-		legend(xx, yy, legend = legend[BFind], pch=rep(21,4), pt.bg= pt.bg[BFind], bty= "n", cex= cexLegend, lty=rep(NULL,4), pt.lwd=rep(1.3,4), pt.cex= pt.cex[BFind])
+		legend(xx, yy, legend = legend[BFind], pch = rep(21,4), pt.bg = pt.bg[BFind], bty = "n",
+			cex = cexLegend, lty = rep(NULL,4), pt.lwd = rep(1.3,4), pt.cex = pt.cex[BFind])
 
-		xx <- grconvertX(0.5, "ndc", "user")
-		y1 <- grconvertY(0.938, "ndc", "user")
-		y2 <- grconvertY(0.888, "ndc", "user")
-		y3 <- grconvertY(0.838, "ndc", "user")
-		y4 <- grconvertY(0.788, "ndc", "user")
+		xx <- grconvertX(0.47, "ndc", "user")
+		y1 <- grconvertY(0.946, "ndc", "user")
+		y2 <- grconvertY(0.890, "ndc", "user")
+		y3 <- grconvertY(0.843, "ndc", "user")
+		y4 <- grconvertY(0.790, "ndc", "user")
 		yy <- c(y1, y2, y3, y4)
 
 		text(xx, yy[BFsort == BF10userText], userBF, cex = 1.3, pos = 4)
 		text(xx, yy[BFsort == BF10ultraText], ultraBF, cex = 1.3, pos = 4)
 		text(xx, yy[BFsort == BF10wText], wBF, cex = 1.3, pos = 4)
-		text(xx, yy[BFsort == BF10maxText], BF10maxt, cex = 1.3, pos = 4)
+		text(xx, yy[BFsort == BF10maxText], maxBF, cex = 1.3, pos = 4)
 	}
 }
 
 
 .plotPosterior.summarystats.ttest <- function(t = NULL, n1 = NULL, n2 = NULL, paired = FALSE,
-				oneSided = FALSE, BF, BFH1H0, callback=function(...) 0, iterations = 10000,
+				oneSided = FALSE, BF, BFH1H0, callback = function(...) 0, iterations = 10000,
 				rscale = "medium", lwd = 2, cexPoints = 1.5, cexAxis = 1.2, cexYlab = 1.5, cexXlab = 1.5,
 				cexTextBF = 1.4, cexCI = 1.1, cexLegend = 1.2, lwdAxis = 1.2, addInformation = TRUE,
 				dontPlotData = FALSE) {
@@ -1324,8 +1332,7 @@
 	}
 
 	# sample from delta posterior
-	bfObject <- BayesFactor::meta.ttestBF(t = t, n1 = n1, n2 = n2, rscale = r,
-																				nullInterval = nullInterval)
+	bfObject <- BayesFactor::meta.ttestBF(t = t, n1 = n1, n2 = n2, rscale = r)
 	library(BayesFactor)
 	samples <- BayesFactor::posterior(model = bfObject, iterations = iterations,
 																		index = 1)
@@ -1344,7 +1351,7 @@
 	} else if (!is.null(n2) && !paired) {
 		deltaHat <- t * sqrt((n1 + n2) / (n1 * n2))
 		df <- n1 + n2 - 2
-		sigmaStart <- sqrt((n1 + n2) / (n1 * n2))
+		sigmaStart <- sqrt((n1 * n2) / (n1 + n2))
 	}
 
 	if (sigmaStart < .01) {
@@ -1352,15 +1359,15 @@
 	}
 
 	parameters <- try(silent = TRUE,
-										expr = optim(par = c(deltaHat, sigmaStart, df),
-																	fn =.likelihoodShiftedT, data = delta,
-																	method = "BFGS")$par)
+					expr = optim(par = c(deltaHat, sigmaStart, df),
+								fn =.likelihoodShiftedT, data = delta,
+								method = "BFGS")$par)
 
 	if (class(parameters) == "try-error") {
 		parameters <- try(silent = TRUE,
-											expr = optim(par = c(deltaHat, sigmaStart, df),
-																		fn = .likelihoodShiftedT, data = delta,
-																		method ="Nelder-Mead")$par)
+						expr = optim(par = c(deltaHat, sigmaStart, df),
+									fn = .likelihoodShiftedT, data = delta,
+									method ="Nelder-Mead")$par)
 	}
 
 	if (! .shouldContinue(callback())) {
@@ -1429,8 +1436,8 @@
 
 	ylim[1] <- 0
 	dmax <- optimize(function(x).dposteriorShiftedT(x, parameters = parameters,
-										oneSided = oneSided), interval = range(xticks),
-										maximum = TRUE)$objective
+					oneSided = oneSided), interval = range(xticks),
+					maximum = TRUE)$objective
 	# get maximum density
 	ylim[2] <- max(stretch * .dprior(0,r, oneSided= oneSided), stretch * dmax)
 
@@ -1482,8 +1489,8 @@
 	}
 
 	posteriorLine <- .dposteriorShiftedT(x = seq(min(xticks), max(xticks),
-																	length.out = 1000), parameters = parameters,
-																	oneSided = oneSided)
+										length.out = 1000), parameters = parameters,
+										oneSided = oneSided)
 
 	xlim <- c(min(CIlow,range(xticks)[1]), max(range(xticks)[2], CIhigh))
 
@@ -1646,7 +1653,7 @@
 	} else {
 		legendPosition <- max(xticks)
 		legend(legendPosition, max(yticks), legend = c("Posterior", "Prior"), lty = c(1,3),
-						bty = "n", lwd = c(lwd,lwd), cex = cexLegend, xjust = 1, yjust = 1,
-						x.intersp = .6, seg.len = 1.2)
+				bty = "n", lwd = c(lwd,lwd), cex = cexLegend, xjust = 1, yjust = 1,
+				x.intersp = .6, seg.len = 1.2)
 	}
 }
